@@ -1,0 +1,41 @@
+{
+  "config": {
+    "log": false,
+    "save": false,
+    "info": true,
+    "trace": true,
+    "error": true,
+    "warning": true,
+    "profile": "debug",
+    "model": {
+      "name": "test",
+      "batchSize": 16,
+      "epochs": 100
+    },
+    "decorator": {
+      "name": "test",
+      "device": "cuda",
+      "max_distance": 200,
+      "frames_to_remember": 10
+    },
+    "dataset": {
+      "name": "test"
+    },
+    "image": {
+      "width": 1280,
+      "height": 720,
+      "preprocess_width": 512,
+      "preprocess_height": 256,
+      "channel": 3,
+      "bev": {
+        "max_y": 240,
+        "max_x": 410,
+        "min_y": 120,
+        "min_x" :60
+      },
+      "calibration" : {
+
+      }
+    }
+  }
+}
