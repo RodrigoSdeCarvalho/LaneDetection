@@ -51,7 +51,7 @@ def get_frames(video_path):
         mask = make_mask(instances_map)
         frame = apply_mask(frame, mask)
 
-        frame = Calibrator(None).bird_eye_view(frame)
+        #frame = Calibrator(None).bird_eye_view(frame)
         cv2.imshow("Frame", frame)
         cv2.waitKey(5)
 

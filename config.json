@@ -1,6 +1,6 @@
 {
   "config": {
-    "log": false,
+    "log": true,
     "save": false,
     "info": true,
     "trace": true,
@@ -16,7 +16,7 @@
       "name": "test",
       "device": "cuda",
       "max_distance": 200,
-      "frames_to_remember": 10
+      "frames_to_remember": 60
     },
     "dataset": {
       "name": "test"
@@ -29,9 +29,9 @@
       "channel": 3,
       "bev": {
         "max_y": 240,
-        "max_x": 410,
+        "max_x": 300,
         "min_y": 120,
-        "min_x" :60
+        "min_x" :150
       },
       "calibration" : {
 

@@ -5,8 +5,6 @@ from abc import ABC, abstractmethod
 
 class ModelDecorator(ABC):
     def __init__(self, model, name):
-        if torch.backends.cudnn.version() < 8000:
-            torch.backends.cudnn.benchmark = True
         self._name = name
         self._model = model
 
