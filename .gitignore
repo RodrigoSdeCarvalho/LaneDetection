@@ -1,6 +1,7 @@
 assets/data/test
 assets/data/train
 assets/data/video
+logs
 outputs
 
 # Python
