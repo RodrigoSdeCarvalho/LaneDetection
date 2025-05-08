@@ -3,3 +3,6 @@ assets/data/train
 assets/data/video
 outputs
 
+# Python
+__pycache__
+
