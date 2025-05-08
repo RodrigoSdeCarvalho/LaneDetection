@@ -22,6 +22,7 @@ class LaneMetrics:
     Implements:
     1. IoU (Intersection over Union) for lane segmentation
     2. Per-lane confusion matrix (TP, FP, FN)
+    3. Point-to-curve distance metrics for more accurate lane evaluation
     """
     
     def __init__(self, test_labels_path: str = None):
@@ -293,6 +294,90 @@ class LaneMetrics:
             return 0.0
             
         return intersection / union
+
+    def calculate_lane_accuracy_vectorized(self, predicted_lanes: List[np.ndarray], 
+                                     ground_truth_lanes: List[np.ndarray],
+                                     distance_threshold: float = 30.0) -> Dict[str, float]:
+        """
+        Calculate lane detection accuracy based on point-to-curve distance using vectorized operations.
+        This metric addresses the limitations of IoU for thin structures like lanes.
+        
+        Args:
+            predicted_lanes: List of binary masks for each predicted lane
+            ground_truth_lanes: List of binary masks for each ground truth lane
+            distance_threshold: Maximum distance (in pixels) for a point to be considered correctly detected
+
+        Returns:
+            Dictionary with accuracy metrics
+        """
+        if not ground_truth_lanes:
+            return {"hit_rate": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
+        
+        # Extract points from ground truth lanes
+        gt_points = []
+        for gt_lane in ground_truth_lanes:
+            y_coords, x_coords = np.where(gt_lane > 0)
+            
+            # Sample points (take every nth point to reduce computation)
+            sample_rate = max(1, len(y_coords) // 50)
+            gt_points.extend([(x_coords[i], y_coords[i]) for i in range(0, len(y_coords), sample_rate)])
+        
+        # Extract points from predicted lanes
+        pred_points = []
+        for pred_lane in predicted_lanes:
+            y_coords, x_coords = np.where(pred_lane > 0)
+            
+            # Sample points (take every nth point to reduce computation)
+            sample_rate = max(1, len(y_coords) // 50)
+            pred_points.extend([(x_coords[i], y_coords[i]) for i in range(0, len(y_coords), sample_rate)])
+        
+        # If either set is empty, return zero metrics
+        if not gt_points or not pred_points:
+            return {"hit_rate": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
+        
+        # Convert to numpy arrays for vectorized operations
+        gt_points_array = np.array(gt_points)
+        pred_points_array = np.array(pred_points)
+        
+        # Calculate distances from each ground truth point to each predicted point
+        gt_hits = np.zeros(len(gt_points_array), dtype=bool)
+        
+        # Process in batches to avoid memory issues with large point sets
+        batch_size = 1000
+        for i in range(0, len(gt_points_array), batch_size):
+            gt_batch = gt_points_array[i:i+batch_size]
+            
+            # Calculate pairwise distances between this batch and all prediction points
+            distances = np.sqrt(((gt_batch[:, np.newaxis, :] - pred_points_array[np.newaxis, :, :]) ** 2).sum(axis=2))
+            
+            # Check if minimum distance is below threshold
+            min_distances = np.min(distances, axis=1)
+            gt_hits[i:i+len(gt_batch)] = min_distances <= distance_threshold
+        
+        # Calculate distances from each predicted point to each ground truth point
+        pred_hits = np.zeros(len(pred_points_array), dtype=bool)
+        
+        for i in range(0, len(pred_points_array), batch_size):
+            pred_batch = pred_points_array[i:i+batch_size]
+            
+            # Calculate pairwise distances between this batch and all ground truth points
+            distances = np.sqrt(((pred_batch[:, np.newaxis, :] - gt_points_array[np.newaxis, :, :]) ** 2).sum(axis=2))
+            
+            # Check if minimum distance is below threshold
+            min_distances = np.min(distances, axis=1)
+            pred_hits[i:i+len(pred_batch)] = min_distances <= distance_threshold
+        
+        # Calculate metrics
+        recall = np.mean(gt_hits)
+        precision = np.mean(pred_hits)
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        return {
+            "hit_rate": recall,      # Percentage of GT points that are close to predictions
+            "precision": precision,  # Percentage of predicted points that are close to GT
+            "recall": recall,        # Same as hit_rate (renamed for clarity)
+            "f1": f1                 # F1 score balancing precision and recall
+        }
     
     def calculate_per_lane_confusion_matrix(self, predicted_lanes: List[np.ndarray], 
                                            ground_truth_lanes: List[np.ndarray]) -> Dict[str, int]:
@@ -405,6 +490,7 @@ class LaneMetrics:
             Logger.warning(f"No lanes detected in {image_path}")
             return {
                 "iou": 0.0,
+                "lane_accuracy": {"hit_rate": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0},
                 "confusion_matrix": {"tp": 0, "fp": 0, "fn": len(gt_data["lanes"])},
                 "num_pred_lanes": 0,
                 "num_gt_lanes": len(gt_data["lanes"])
@@ -428,8 +514,12 @@ class LaneMetrics:
         # Calculate per-lane confusion matrix
         conf_matrix = self.calculate_per_lane_confusion_matrix(pred_lanes, gt_lanes)
         
+        # Calculate the new lane accuracy metrics
+        lane_accuracy = self.calculate_lane_accuracy_vectorized(pred_lanes, gt_lanes)
+        
         return {
             "iou": iou,
+            "lane_accuracy": lane_accuracy,
             "confusion_matrix": conf_matrix,
             "num_pred_lanes": len(pred_lanes),
             "num_gt_lanes": len(gt_lanes),
@@ -457,7 +547,7 @@ class LaneMetrics:
         if "error" in result:
             Logger.error(f"Error visualizing {image_path}: {result['error']}")
             return None
-            
+                
         # Get the original image
         image = result["image"]
         
@@ -475,9 +565,9 @@ class LaneMetrics:
             
             # Assign different colors to each lane
             colors = [
-                (0, 0, 255),   # Red
-                (0, 255, 0),   # Green
                 (255, 0, 0),   # Blue
+                (0, 255, 0),   # Green
+                (0, 0, 255),   # Red
                 (0, 255, 255), # Yellow
                 (255, 0, 255), # Magenta
                 (255, 255, 0)  # Cyan
@@ -506,6 +596,11 @@ class LaneMetrics:
         fp_text = f"FP: {result['confusion_matrix']['fp']}"
         fn_text = f"FN: {result['confusion_matrix']['fn']}"
         
+        # Add new metrics
+        hit_rate_text = f"Hit Rate: {result['lane_accuracy']['hit_rate']:.4f}"
+        prec_text = f"Precision: {result['lane_accuracy']['precision']:.4f}"
+        f1_text = f"F1: {result['lane_accuracy']['f1']:.4f}"
+        
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.5
         font_thickness = 1
@@ -513,19 +608,20 @@ class LaneMetrics:
         bg_color = (0, 0, 0)
         
         # Add background rectangle for better text visibility
-        for i, text in enumerate([iou_text, tp_text, fp_text, fn_text]):
+        metrics_texts = [iou_text, tp_text, fp_text, fn_text, hit_rate_text, prec_text, f1_text]
+        for i, text in enumerate(metrics_texts):
             (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
             cv2.rectangle(vis_image, (10, 20 + i*25 - 15), (10 + text_width, 20 + i*25 + 5), bg_color, -1)
             cv2.putText(vis_image, text, (10, 20 + i*25), font, font_scale, text_color, font_thickness)
         
         # Add legend
         legend_texts = ["Predicted Lanes", "Ground Truth"]
-        legend_colors = [(0, 0, 255), (255, 255, 255)]
+        legend_colors = [(255, 0, 0), (255, 255, 255)]  # Blue for predicted lanes, White for ground truth
         
         for i, (text, color) in enumerate(zip(legend_texts, legend_colors)):
             (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
             cv2.rectangle(vis_image, (vis_image.shape[1] - 10 - text_width - 30, 20 + i*25 - 15), 
-                         (vis_image.shape[1] - 10, 20 + i*25 + 5), bg_color, -1)
+                        (vis_image.shape[1] - 10, 20 + i*25 + 5), bg_color, -1)
             cv2.putText(vis_image, text, (vis_image.shape[1] - 10 - text_width - 20, 20 + i*25), 
                        font, font_scale, text_color, font_thickness)
             cv2.rectangle(vis_image, (vis_image.shape[1] - 10 - 15, 20 + i*25 - 10), 
@@ -536,7 +632,7 @@ class LaneMetrics:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             cv2.imwrite(output_path, vis_image)
             Logger.info(f"Visualization saved to {output_path}")
-            
+                
         return vis_image
     
     def evaluate_dataset(self, num_samples: int = None, output_dir: str = None) -> Dict[str, Any]:
@@ -562,11 +658,14 @@ class LaneMetrics:
         total_tp = 0
         total_fp = 0
         total_fn = 0
+        total_hit_rate = 0.0
+        total_precision = 0.0
+        total_recall = 0.0
         num_valid_samples = 0
         
         # Set up progress tracking
         total_samples = len(samples)
-        progress_interval = max(1, total_samples // 20)  # Show progress at 5% intervals
+        progress_interval = max(1, total_samples // 20)
         
         # Process each sample
         for i, sample in enumerate(samples):
@@ -584,13 +683,15 @@ class LaneMetrics:
             total_tp += result["confusion_matrix"]["tp"]
             total_fp += result["confusion_matrix"]["fp"]
             total_fn += result["confusion_matrix"]["fn"]
+            total_hit_rate += result["lane_accuracy"]["hit_rate"]
+            total_precision += result["lane_accuracy"]["precision"]
+            total_recall += result["lane_accuracy"]["recall"]
             num_valid_samples += 1
             
             # Save visualization if requested
             if output_dir:
-                # Create a filename based on the original path
                 base_name = os.path.basename(image_path)
-                output_path = os.path.join(output_dir, f"vis_{base_name}")
+                output_path = os.path.join(output_dir, f"sample_{i:04d}_vis_{base_name}")
                 self.visualize_prediction(image_path, sample, output_path)
             
             # Show progress
@@ -601,14 +702,26 @@ class LaneMetrics:
         # Calculate average metrics
         if num_valid_samples > 0:
             avg_iou = total_iou / num_valid_samples
-            precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
-            recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
-            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            avg_hit_rate = total_hit_rate / num_valid_samples
+            avg_precision = total_precision / num_valid_samples
+            avg_recall = total_recall / num_valid_samples
+            
+            # Calculate confusion matrix metrics
+            cm_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+            cm_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
+            cm_f1 = 2 * cm_precision * cm_recall / (cm_precision + cm_recall) if (cm_precision + cm_recall) > 0 else 0.0
+            
+            # Calculate point-to-curve F1 score
+            point_f1 = 2 * avg_precision * avg_recall / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0.0
         else:
             avg_iou = 0.0
-            precision = 0.0
-            recall = 0.0
-            f1 = 0.0
+            avg_hit_rate = 0.0
+            avg_precision = 0.0
+            avg_recall = 0.0
+            cm_precision = 0.0
+            cm_recall = 0.0
+            cm_f1 = 0.0
+            point_f1 = 0.0
         
         # Compile and return results
         results = {
@@ -618,17 +731,24 @@ class LaneMetrics:
             "total_tp": total_tp,
             "total_fp": total_fp,
             "total_fn": total_fn,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1
+            "confusion_matrix": {
+                "precision": cm_precision,
+                "recall": cm_recall,
+                "f1": cm_f1
+            },
+            "lane_accuracy": {
+                "hit_rate": avg_hit_rate,
+                "precision": avg_precision,
+                "recall": avg_recall,
+                "f1": point_f1
+            }
         }
         
         # Print summary
         Logger.info("Evaluation complete. Summary:")
         Logger.info(f"Average IoU: {avg_iou:.4f}")
-        Logger.info(f"Precision: {precision:.4f}")
-        Logger.info(f"Recall: {recall:.4f}")
-        Logger.info(f"F1 Score: {f1:.4f}")
+        Logger.info(f"Confusion Matrix: P={cm_precision:.4f}, R={cm_recall:.4f}, F1={cm_f1:.4f}")
+        Logger.info(f"Lane Accuracy: P={avg_precision:.4f}, R={avg_recall:.4f}, F1={point_f1:.4f}")
         
         return results
         
@@ -645,16 +765,22 @@ class LaneMetrics:
         print(f"Total samples evaluated: {results['num_samples']}")
         print(f"Valid samples: {results['num_valid_samples']}")
         print("-"*50)
-        print("Overall Segmentation Quality:")
+        print("Traditional Metrics:")
         print(f"  Average IoU: {results['avg_iou']:.4f}")
         print("-"*50)
-        print("Per-Lane Detection Quality:")
+        print("Per-Lane Detection (Confusion Matrix):")
         print(f"  True Positives: {results['total_tp']}")
         print(f"  False Positives: {results['total_fp']}")
         print(f"  False Negatives: {results['total_fn']}")
-        print(f"  Precision: {results['precision']:.4f}")
-        print(f"  Recall: {results['recall']:.4f}")
-        print(f"  F1 Score: {results['f1']:.4f}")
+        print(f"  Precision: {results['confusion_matrix']['precision']:.4f}")
+        print(f"  Recall: {results['confusion_matrix']['recall']:.4f}")
+        print(f"  F1 Score: {results['confusion_matrix']['f1']:.4f}")
+        print("-"*50)
+        print("Point-to-Curve Distance Metrics:")
+        print(f"  Hit Rate: {results['lane_accuracy']['hit_rate']:.4f}")
+        print(f"  Precision: {results['lane_accuracy']['precision']:.4f}")
+        print(f"  Recall: {results['lane_accuracy']['recall']:.4f}")
+        print(f"  F1 Score: {results['lane_accuracy']['f1']:.4f}")
         print("="*50)
         
         
@@ -666,6 +792,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="visualization_results", help="Directory to save visualizations")
     parser.add_argument("--test_labels", type=str, default=None, help="Path to test labels JSON file")
     parser.add_argument("--verify_only", action="store_true", help="Only verify test data without evaluation")
+    parser.add_argument("--distance_threshold", type=float, default=15.0, 
+                       help="Maximum distance (in pixels) for a point to be considered correctly detected")
     
     args = parser.parse_args()
     
