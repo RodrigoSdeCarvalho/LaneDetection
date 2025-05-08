@@ -35,6 +35,13 @@ class Path(Singleton):
         return syspath.join(self.train_data, dataset_name)
 
     @property
+    def test_data(self):
+        return syspath.join(self.data, 'test')
+
+    def test_dataset(self, dataset_name):
+        return syspath.join(self.test_data, dataset_name)
+
+    @property
     def models(self):
         return syspath.join(self._root, 'assets', 'models')
 
