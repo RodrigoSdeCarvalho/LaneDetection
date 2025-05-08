@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import cv2
 from typing import Dict, List, Any
-from scipy.optimize import linear_sum_assignment
 
 from neural_networks.decorators.lane_detector.lane_detector import LaneDetector
 from api import API
@@ -382,7 +381,7 @@ class LaneMetrics:
     def calculate_per_lane_confusion_matrix(self, predicted_lanes: List[np.ndarray], 
                                            ground_truth_lanes: List[np.ndarray]) -> Dict[str, int]:
         """
-        Calculate confusion matrix for lane detection on a per-lane basis.
+        Calculate confusion matrix for lane detection on a per-lane basis using a simple greedy approach.
         
         Args:
             predicted_lanes: List of binary masks for each predicted lane
@@ -410,55 +409,32 @@ class LaneMetrics:
         # Define IoU threshold for matching
         iou_threshold = 0.35  # Consider a lane as matching if IoU > threshold
         
-        # Apply Hungarian algorithm to find optimal matching that maximizes total IoU
-        # First, create a cost matrix (1 - IoU for valid matches, inf for invalid)
-        cost_matrix = np.ones_like(iou_matrix) * float('inf')
-        valid_matches = iou_matrix > iou_threshold
-        cost_matrix[valid_matches] = 1.0 - iou_matrix[valid_matches]
+        # Use simple greedy matching approach
+        matched_pred = set()
+        matched_gt = set()
+        tp = 0
         
-        try:
-            # Find optimal assignment (minimum cost, maximum IoU)
-            row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        # For each GT lane, find the best predicted lane (highest IoU)
+        for j in range(len(ground_truth_lanes)):
+            best_pred = -1
+            best_iou = iou_threshold  # Must exceed threshold
             
-            # Count true positives (valid assignments)
-            tp = sum(cost_matrix[row_indices[i], col_indices[i]] != float('inf') 
-                    for i in range(len(row_indices)))
+            for i in range(len(predicted_lanes)):
+                if i not in matched_pred:  # Only consider unmatched predictions
+                    if iou_matrix[i, j] > best_iou:
+                        best_iou = iou_matrix[i, j]
+                        best_pred = i
             
-            # False positives: predicted lanes that weren't matched
-            fp = len(predicted_lanes) - tp
-            
-            # False negatives: ground truth lanes that weren't matched
-            fn = len(ground_truth_lanes) - tp
-            
-        except Exception as e:
-            # Fallback if Hungarian algorithm fails
-            Logger.warning(f"Hungarian algorithm failed: {str(e)}")
-            
-            # Use greedy matching instead
-            matched_pred = set()
-            matched_gt = set()
-            
-            tp = 0
-            
-            # For each GT lane, find the best predicted lane
-            for j in range(len(ground_truth_lanes)):
-                if j < iou_matrix.shape[1]:  # Safety check
-                    best_pred = -1
-                    best_iou = iou_threshold
-                    
-                    for i in range(len(predicted_lanes)):
-                        if i < iou_matrix.shape[0] and i not in matched_pred:  # Safety check
-                            if iou_matrix[i, j] > best_iou:
-                                best_iou = iou_matrix[i, j]
-                                best_pred = i
-                    
-                    if best_pred >= 0:
-                        tp += 1
-                        matched_pred.add(best_pred)
-                        matched_gt.add(j)
-            
-            fp = len(predicted_lanes) - tp
-            fn = len(ground_truth_lanes) - tp
+            if best_pred >= 0:
+                tp += 1
+                matched_pred.add(best_pred)
+                matched_gt.add(j)
+        
+        # False positives: predicted lanes that weren't matched
+        fp = len(predicted_lanes) - tp
+        
+        # False negatives: ground truth lanes that weren't matched
+        fn = len(ground_truth_lanes) - tp
         
         return {"tp": tp, "fp": fp, "fn": fn}
         
